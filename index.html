@@ -58,6 +58,42 @@
   .up-hint{font-size:13px;color:var(--muted);margin-bottom:10px}
   .up-status{font-size:12px;margin-top:10px}.up-status.ok{color:var(--green);font-weight:600}.up-status.err{color:var(--red);font-weight:600}
   .mini-table{width:100%;font-size:12px}.mini-table th,.mini-table td{padding:6px 8px}
+
+  /* ========== 移动端响应式 ========== */
+  @media (max-width: 768px){
+    header{padding:14px 16px}
+    header h1{font-size:16px;letter-spacing:.3px}
+    header .sub{font-size:11px}
+    .wrap{padding:12px 12px;max-width:100%}
+    .cards{grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
+    .card{padding:12px}
+    .card .k{font-size:11px}
+    .card .v{font-size:20px}
+    .grid2{grid-template-columns:1fr;gap:12px}   /* 桌面双栏 → 手机单列堆叠 */
+    .panel{padding:14px 14px;margin-bottom:12px;border-radius:10px}
+    .panel h2{font-size:14px;margin-bottom:10px}
+    .rank-scroll{max-height:320px}
+    .kpis{grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px}
+    .kpi{padding:10px}
+    .kpi .v{font-size:16px}
+    .chart{height:260px}.chart-sm{height:250px}
+    .mseg button{padding:5px 10px;font-size:11px}
+    /* 表格过宽时允许横向滚动 */
+    .rank-scroll{overflow-x:auto}
+    .mini-table{font-size:11px;min-width:480px}    /* 强制最小宽度，横向滚 */
+    .mini-table th,.mini-table td{padding:5px 6px}
+    /* ECharts tooltip 字体调小 */
+    .legend{font-size:11px;margin-bottom:8px}
+    /* 隐藏 PC 端上传面板提示文字过长的部分 */
+    .up-drop .up-hint{font-size:12px}
+  }
+  @media (max-width: 420px){
+    .cards{grid-template-columns:1fr 1fr;gap:8px}
+    .card .v{font-size:18px}
+    .kpis{grid-template-columns:1fr 1fr}
+    .mini-table{min-width:420px}
+    .chart{height:230px}.chart-sm{height:230px}
+  }
 </style>
 </head>
 <body>
@@ -86,7 +122,7 @@
         <h2>企业用电排名</h2>
         <div class="rank"><input type="text" id="search" placeholder="搜索企业名称…"></div>
         <div class="rank-scroll"><table>
-          <thead><tr><th>企业名称</th><th>总电量(MWh)</th><th>综合电价(元/MWh)</th></tr></thead>
+          <thead><tr><th>企业名称</th><th>总电量(MWh)</th><th>零售电价(元/MWh)</th></tr></thead>
           <tbody id="rankBody"></tbody>
         </table></div>
       </div>
@@ -118,8 +154,9 @@ const HAS_DETAIL = MODE === 'detailed';
 let COMPANIES = D.companies;
 let TIME = (D.timeCols || []);
 let MONTHS = D.months || [];
+let GRID_PRICE = D.gridPrice || {};  // {month: {price:[24], periods:[...]}}
 let selected=null, curMonth='all', sourceLabel='预置数据（data.js）';
-let grank = null, gdetail = null, gdaily = null, goverall = null, gpv = null, gprice = null, gmonthly = null;
+let grank = null, gdetail = null, gdaily = null, goverall = null, gpv = null, gprice = null, gmonthly = null, ggridprice = null;
 
 const fmt=(x,d=2)=>(x==null||isNaN(x))?"-":(+x).toFixed(d);
 const wardie=(x)=>x; // 电量已是 MWh
@@ -137,10 +174,18 @@ function compSel(name,mk){
   if(!mk||mk==='all'){
     let cost=0,has=false;
     c.months.forEach(mo=>{if(mo.cost!=null){cost+=mo.cost;has=true;}});
+    // 补全所有全局月份：企业缺失的月电量为 0
+    const monthMap = {};
+    c.months.forEach(mo=>monthMap[mo.m]=mo);
+    const fullMonths = (D.months||MONTHS).map(mk=>monthMap[mk] || {
+      m:mk, energy:0, days:0, hourE:new Array(24).fill(0),
+      price:null, cost:null, avgPrice:null, maxLoad:0, maxLoadPoints:[]
+    });
     return {energy:c.total,cost:has?cost:null,avgPrice:(has&&c.total)?cost/c.total:null,
-      curve:HAS_DETAIL?c.curve:null,isAll:true,months:c.months};
+      curve:HAS_DETAIL?c.curve:null,isAll:true,months:fullMonths};
   }
-  const mo=c.months.find(x=>x.m===mk)||c.months[0];
+  let mo=c.months.find(x=>x.m===mk);
+  if(!mo){ mo={m:mk, energy:0, days:0, hourE:new Array(24).fill(0), price:null, cost:null, avgPrice:null, maxLoad:0, maxLoadPoints:[]}; }
   return {energy:mo.energy,cost:mo.cost,avgPrice:mo.avgPrice,
     curve:HAS_DETAIL?mo.mcurve:null,isAll:false,month:mo};
 }
@@ -172,7 +217,7 @@ function setCards(names,totalE,totalC,meters,nPeriods,kind){
   const cards=[
     {k:"代理企业总数",v:names.length,s:""},
     {k:"累计总电量",v:fmt(wardie(totalE),1)||"0",s:"MWh"},
-    {k:"市场综合电价",v:fmt(totalC&&totalE?totalC/totalE:0,1)||"-",s:"元/MWh"},
+    {k:"市场零售电价",v:fmt(totalC&&totalE?totalC/totalE:0,1)||"-",s:"元/MWh"},
   ];
   if(isSet){
     cards.push({k:"月均总电量",v:fmt(wardie(totalE/Math.max(1,nPeriods)),1),s:"MWh"});
@@ -208,7 +253,7 @@ document.getElementById("search").addEventListener("input",e=>buildRank(e.target
 
 // ---------- 企业详情 ----------
 function selectCompany(name){
-  selected=name; curMonth=HAS_DETAIL && MONTHS.length?MONTHS[0]:'all';
+  selected=name; curMonth='all';
   const c=COMPANIES[name];
   document.getElementById("detailBadge").textContent="排名 #"+(Object.keys(COMPANIES).sort((a,b)=>COMPANIES[b].total-COMPANIES[a].total).indexOf(name)+1);
   document.getElementById("detailTitle").innerHTML=`企业 ${HAS_DETAIL?"分时电量·电价":"结算汇总"} 详情 · ${esc(name)}<span class="badge" id="detailBadge"></span>`;
@@ -217,12 +262,12 @@ function selectCompany(name){
     document.getElementById("detailBody").innerHTML=`
       <div class="mseg" id="monthSeg">${mbtns}</div>
       <div class="kpis" id="detailKpis"></div>
-      <div class="legend">电量 24 小时负荷曲线（单位：MWh）</div>
-      <div class="chart-sm" id="detailChart"></div>
       <div class="panel" style="margin-top:18px"><h2>电价 · 电量对比</h2><div id="priceBody"></div></div>
       <div class="legend" style="margin-top:18px">每日总电量（MWh）</div>
       <div class="chart-sm" id="dailyChart"></div>
-      <div class="panel" style="margin-top:18px"><h2>峰谷平电量构成</h2><div id="pvPanel"></div></div>`;
+      <div class="panel" style="margin-top:18px"><h2>国网电价 vs 用户电价</h2><div id="gridPriceBody"></div></div>
+      <div class="legend" style="margin-top:18px">电量 96 时段负荷曲线（15min 电量，单位：MWh）</div>
+      <div class="chart-sm" id="detailChart"></div>`;
   } else {
     document.getElementById("detailBody").innerHTML=`
       <div class="mseg" id="monthSeg">${mbtns}</div>
@@ -244,21 +289,39 @@ function renderCompany(){
   const c=COMPANIES[selected], sel=compSel(selected,curMonth);
   if(HAS_DETAIL){
     const dailyTotal=(c.daily||[]).reduce((s,d)=>s+d.v,0), nDays=Math.max(1,(c.daily||[]).length);
+    // 最大负荷：全部视图用企业级全局，单月视图用当月（后端 maxLoadPoints 数组）
+    let loadMW, loadPoints;
+    if(!sel.isAll && sel.month){
+      loadMW = sel.month.maxLoad || 0;
+      loadPoints = sel.month.maxLoadPoints || [];
+    } else {
+      loadMW = c.maxLoad || 0;
+      loadPoints = c.maxLoadPoints || [];
+    }
+    // 显示：1 个点 → "YYYY-MM-DD HH:MM"；多个点 → "2026-01-20 10:45、2026-01-22 11:15 等 N 个点"
+    let when = "-";
+    if(loadPoints.length === 1){
+      const p = loadPoints[0];
+      when = `${p.date} ${p.time}`;
+    } else if(loadPoints.length > 1){
+      const shown = loadPoints.slice(0,2).map(p=>`${p.date} ${p.time}`).join("、");
+      when = `${shown} 等 ${loadPoints.length} 个点`;
+    }
     document.getElementById("detailKpis").innerHTML=`
       <div class="kpi"><div class="t">电量（${sel.isAll?"合计":"该月"}）</div><div class="v c-blue">${fmt(sel.energy)}<small> MWh</small></div></div>
-      <div class="kpi"><div class="t">综合电价</div><div class="v c-amber">${sel.avgPrice!=null?fmt(sel.avgPrice,1)+" <small>元/MWh</small>":"-"}</div></div>
+      <div class="kpi"><div class="t">零售电价</div><div class="v c-amber">${sel.avgPrice!=null?fmt(sel.avgPrice,1)+" <small>元/MWh</small>":"-"}</div></div>
       <div class="kpi"><div class="t">日均电量</div><div class="v">${fmt(sel.isAll?dailyTotal/nDays:sel.energy/(sel.month.days||1))}<small> MWh</small></div></div>
-      <div class="kpi"><div class="t">最大时段负荷</div><div class="v c-green">${fmt(sel.curve&&sel.curve.length?Math.max.apply(null,sel.curve):0)}<small> MWh/15min</small></div></div>
+      <div class="kpi"><div class="t">最大负荷</div><div class="v c-green">${fmt(loadMW,2)}<small> MW</small><div style="font-size:11px;font-weight:400;opacity:.7;margin-top:3px">出现于 ${when}</div></div></div>
       <div class="kpi"><div class="t">计量点/户号</div><div class="v c-violet">${c.nMeter||0}<small> 个 / ${c.nAccount||0} 户</small></div></div>`;
     drawDetail(sel);
     drawPrice(sel);
     drawDaily();
-    drawPV(sel);
+    drawGridPrice(sel);
   } else {
     // settlement: KPI + 月度表格 + 电量/电价对比
     document.getElementById("detailKpis").innerHTML=`
       <div class="kpi"><div class="t">电量（${sel.isAll?"合计":"该月"}）</div><div class="v c-blue">${fmt(sel.energy)}<small> MWh</small></div></div>
-      <div class="kpi"><div class="t">综合电价</div><div class="v c-amber">${sel.avgPrice!=null?fmt(sel.avgPrice,1)+" <small>元/MWh</small>":"-"}</div></div>
+      <div class="kpi"><div class="t">零售电价</div><div class="v c-amber">${sel.avgPrice!=null?fmt(sel.avgPrice,1)+" <small>元/MWh</small>":"-"}</div></div>
       <div class="kpi"><div class="t">月均电量</div><div class="v">${fmt(sel.isAll?sel.energy/Math.max(1,sel.months.length):sel.energy)}<small> MWh</small></div></div>`;
     drawPrice(sel);  // settlement 下 drawPrice 也能复用（sel.months 仍可用）
     drawSettlementMonthly(sel);
@@ -280,30 +343,35 @@ function drawDetail(sel){
 function drawDaily(){
   const c=COMPANIES[selected];
   if(!c.daily) return;
+  // 单月视图：只显示当月日期
+  let dlist=c.daily;
+  if(curMonth && curMonth!=='all'){
+    dlist=dlist.filter(d=>d.d.startsWith(curMonth));
+  }
   if(gdaily)gdaily.dispose();
   gdaily=echarts.init(document.getElementById("dailyChart"));
   gdaily.setOption({
     tooltip:{trigger:"axis",valueFormatter:v=>fmt(wardie(v),2)+" MWh"},
-    grid:{left:55,right:15,top:15,bottom:45},dataZoom:[{type:"inside"},{type:"slider",height:18,bottom:5}],
-    xAxis:{type:"category",data:c.daily.map(d=>d.d),axisLabel:{rotate:45,fontSize:10}},
+    grid:{left:55,right:15,top:15,bottom:45},
+    xAxis:{type:"category",data:dlist.map(d=>d.d),axisLabel:{rotate:45,fontSize:10}},
     yAxis:{type:"value",name:"MWh"},
-    series:[{type:"bar",data:c.daily.map(d=>d.v),itemStyle:{borderRadius:[3,3,0,0],color:"#10b981"},barWidth:"55%"}]
+    series:[{type:"bar",data:dlist.map(d=>d.v),itemStyle:{borderRadius:[3,3,0,0],color:"#10b981"},barWidth:"55%"}]
   });
 }
 
-// settlement 下：月度电量 vs 综合电价 双 Y 轴对比
+// settlement 下：月度电量 vs 零售电价 双 Y 轴对比
 function drawSettlementMonthly(sel){
   if(gmonthly)gmonthly.dispose();
   gmonthly=echarts.init(document.getElementById("monthlyChart"));
   gmonthly.setOption({
     tooltip:{trigger:"axis"},
-    legend:{top:0,data:["电量(MWh)","综合电价(元/MWh)"]},
+    legend:{top:0,data:["电量(MWh)","零售电价(元/MWh)"]},
     grid:{left:60,right:70,top:30,bottom:30},
     xAxis:{type:"category",data:sel.months.map(m=>m.m)},
     yAxis:[{type:"value",name:"MWh",scale:true},{type:"value",name:"元/MWh",scale:true}],
     series:[
       {name:"电量(MWh)",type:"bar",data:sel.months.map(m=>m.energy),itemStyle:{color:"#2563eb"},barWidth:"40%"},
-      {name:"综合电价(元/MWh)",type:"line",yAxisIndex:1,data:sel.months.map(m=>m.avgPrice!=null?m.avgPrice:null),smooth:true,symbol:"circle",symbolSize:5,itemStyle:{color:"#f59e0b"},lineStyle:{width:2}}
+      {name:"零售电价(元/MWh)",type:"line",yAxisIndex:1,data:sel.months.map(m=>m.avgPrice!=null?m.avgPrice:null),smooth:true,symbol:"circle",symbolSize:5,itemStyle:{color:"#f59e0b"},lineStyle:{width:2}}
     ]
   });
 }
@@ -311,109 +379,203 @@ function drawSettlementMonthly(sel){
 // 电价·电费
 function drawPrice(sel){
   const holder=document.getElementById("priceBody");
-  if(sel.isAll){ // 月度汇总
-    const rows=sel.months.map(mo=>`
-      <tr><td>${mo.m}</td><td>${fmt(mo.energy)}</td><td>${fmt(mo.avgPrice!=null?mo.avgPrice:0,1)}</td></tr>`).join("");
+  if(sel.isAll){ // 月度汇总：电量柱 + 零售/国网双电价线 + 节省费用表
+    // 每月计算国网加权电价 + 节省
+    const monthsWithCalc = sel.months.map(mo=>{
+      const gp = GRID_PRICE[mo.m] ? GRID_PRICE[mo.m].price : null;
+      let gridW=null, diff=null, saveFee=null;
+      if(gp && gp.some(v=>v!=null)){
+        let gn=0, gd=0;
+        for(let h=0;h<24;h++){
+          if(gp[h]!=null && mo.hourE[h]>0){ gn+=mo.hourE[h]*gp[h]; gd+=mo.hourE[h]; }
+        }
+        if(gd>0){
+          gridW = gn/gd;
+          if(mo.avgPrice!=null){
+            diff = gridW - mo.avgPrice;
+            saveFee = diff * mo.energy / 10000;
+          }
+        }
+      }
+      return {...mo, gridW, diff, saveFee};
+    });
+    // 合计行
+    const totalEnergy = monthsWithCalc.reduce((s,m)=>s+m.energy,0);
+    // 总加权：用 Σ(hourE×price) 重算零售和国网
+    let retailN=0, retailD=0, gridN=0, gridD=0;
+    monthsWithCalc.forEach(mo=>{
+      for(let h=0;h<24;h++){
+        if(mo.price!=null && mo.price[h]!=null && mo.hourE[h]>0){ retailN += mo.hourE[h]*mo.price[h]; retailD += mo.hourE[h]; }
+        const gp = GRID_PRICE[mo.m] ? GRID_PRICE[mo.m].price : null;
+        if(gp && gp[h]!=null && mo.hourE[h]>0){ gridN += mo.hourE[h]*gp[h]; gridD += mo.hourE[h]; }
+      }
+    });
+    const retailW_avg = retailD>0?retailN/retailD:null;
+    const gridW_avg = gridD>0?gridN/gridD:null;
+    const totalDiff = (retailW_avg!=null && gridW_avg!=null) ? gridW_avg - retailW_avg : null;
+    const totalSaveFee = totalDiff!=null ? totalDiff * totalEnergy / 10000 : null;
+
+    const rows = monthsWithCalc.map(mo=>`
+      <tr>
+        <td>${mo.m}</td>
+        <td class="r">${fmt(mo.energy)}</td>
+        <td class="r c-amber">${mo.avgPrice!=null?fmt(mo.avgPrice,1):"-"}</td>
+        <td class="r c-red">${mo.gridW!=null?fmt(mo.gridW,1):"-"}</td>
+        <td class="r ${mo.diff!=null?(mo.diff>=0?'c-green':'c-red'):''}">${mo.diff!=null?(mo.diff>=0?'+':'')+fmt(mo.diff,1):"-"}</td>
+        <td class="r ${mo.saveFee!=null?(mo.saveFee>=0?'c-green':'c-red'):''}">${mo.saveFee!=null?(mo.saveFee>=0?'+':'')+fmt(mo.saveFee,2):"-"}</td>
+      </tr>`).join("");
+    const totalRow = `
+      <tr style="font-weight:600;background:#f8fafc">
+        <td>合计</td>
+        <td class="r">${fmt(totalEnergy)}</td>
+        <td class="r c-amber">${retailW_avg!=null?fmt(retailW_avg,1):"-"}</td>
+        <td class="r c-red">${gridW_avg!=null?fmt(gridW_avg,1):"-"}</td>
+        <td class="r ${totalDiff!=null?(totalDiff>=0?'c-green':'c-red'):''}">${totalDiff!=null?(totalDiff>=0?'+':'')+fmt(totalDiff,1):"-"}</td>
+        <td class="r ${totalSaveFee!=null?(totalSaveFee>=0?'c-green':'c-red'):''}">${totalSaveFee!=null?(totalSaveFee>=0?'+':'')+fmt(totalSaveFee,2):"-"}</td>
+      </tr>`;
+
     holder.innerHTML=`
-      <div class="legend">各月电量与综合电价（重点对比每小时电价与电量请切换到单月视图）</div>
-      <table class="mini-table"><thead><tr><th>月份</th><th>电量(MWh)</th><th>综合电价(元/MWh)</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="legend">各月电量、零售电价 vs 国网电价（节省情况重点对比）</div>
+      <table class="mini-table"><thead><tr>
+        <th>月份</th><th class="r">电量(MWh)</th><th class="r">零售电价(元/MWh)</th><th class="r">国网电价(元/MWh)</th><th class="r">度电节省</th><th class="r">节省费用(万元)</th>
+      </tr></thead><tbody>${rows}${totalRow}</tbody></table>
       <div class="chart-sm" id="monthPriceChart" style="height:260px;margin-top:10px"></div>`;
     if(gprice)gprice.dispose();
     gprice=echarts.init(document.getElementById("monthPriceChart"));
+    const series=[
+      {name:"电量(MWh)",type:"bar",data:monthsWithCalc.map(m=>m.energy),itemStyle:{color:"#2563eb"},barWidth:"40%"},
+      {name:"零售电价(元/MWh)",type:"line",yAxisIndex:1,data:monthsWithCalc.map(m=>m.avgPrice!=null?m.avgPrice:null),smooth:true,itemStyle:{color:"#f59e0b"},lineStyle:{width:2}},
+      {name:"国网电价(元/MWh)",type:"line",yAxisIndex:1,data:monthsWithCalc.map(m=>m.gridW!=null?m.gridW:null),smooth:true,itemStyle:{color:"#dc2626"},lineStyle:{width:2}}
+    ];
     gprice.setOption({
       tooltip:{trigger:"axis"},
-      legend:{top:0,data:["电量(MWh)","综合电价(元/MWh)"]},
+      legend:{top:0,data:series.map(s=>s.name)},
       grid:{left:60,right:70,top:28,bottom:30},
-      xAxis:{type:"category",data:sel.months.map(mo=>mo.m)},
+      xAxis:{type:"category",data:monthsWithCalc.map(m=>m.m)},
       yAxis:[{type:"value",name:"MWh",scale:true},{type:"value",name:"元/MWh",scale:true}],
-      series:[
-        {name:"电量(MWh)",type:"bar",data:sel.months.map(mo=>mo.energy),itemStyle:{color:"#2563eb"},barWidth:"45%"},
-        {name:"综合电价(元/MWh)",type:"line",yAxisIndex:1,data:sel.months.map(mo=>mo.avgPrice!=null?mo.avgPrice:null),smooth:true,itemStyle:{color:"#f59e0b"},lineStyle:{width:2}}
-      ]});
+      series});
     return;
   }
-  // 单月：小时电量 vs 小时电价（重点突出每小时电量和电价的对比）
+  // 单月：小时电量 vs 小时电价 vs 国网电价，下方加权电价 + 节省费用合计
   const mo=sel.month;
   const hasP=mo.price&&mo.price.some(p=>p!=null);
-  if(!hasP){ holder.innerHTML='<div class="empty">该企业当月无分时电价数据</div>'; if(gprice)gprice.dispose(); gprice=null; return; }
+  const monthKey = mo.m;
+  const gridPrices = GRID_PRICE[monthKey] ? GRID_PRICE[monthKey].price : null; // [24] 可能有 null
+
+  // --- 计算加权电价 ---
+  let retailW = null, gridW = null, diff = null, saveFee = null;
+  if(hasP){
+    // 零售加权：Σ(hourE[h] * price[h]) / Σ(hourE[h])，只算 price 非 null 的小时
+    let re_n = 0, re_d = 0;
+    for(let h=0;h<24;h++){
+      if(mo.price[h]!=null && mo.hourE[h]>0){ re_n += mo.hourE[h]*mo.price[h]; re_d += mo.hourE[h]; }
+    }
+    if(re_d>0) retailW = re_n/re_d;
+    // 国网加权：同理
+    if(gridPrices && gridPrices.some(v=>v!=null)){
+      let gn = 0, gd = 0;
+      for(let h=0;h<24;h++){
+        if(gridPrices[h]!=null && mo.hourE[h]>0){ gn += mo.hourE[h]*gridPrices[h]; gd += mo.hourE[h]; }
+      }
+      if(gd>0){
+        gridW = gn/gd;
+        if(retailW!=null){
+          diff = gridW - retailW;  // 正数：零售更便宜
+          saveFee = diff * mo.energy / 10000;  // 万元
+        }
+      }
+    }
+  }
+
+  // --- 合计区 HTML ---
+  const row = (label, val, unit, color="") =>
+    `<tr><td>${label}</td><td class="r ${color}">${val}${unit}</td></tr>`;
+  const summaryHtml = hasP ? `
+    <table class="mini-table" style="margin-top:10px"><thead><tr>
+      <th>指标</th><th>数值</th>
+    </tr></thead><tbody>
+      ${row("当月总电量", fmt(mo.energy), " MWh")}
+      ${row("零售加权电价", retailW!=null?fmt(retailW,1):"-", " 元/MWh", "c-amber")}
+      ${gridPrices&&gridPrices.some(v=>v!=null) ? row("国网加权电价", gridW!=null?fmt(gridW,1):"-", " 元/MWh", "c-red") : ""}
+      ${diff!=null ? row("度电节省（零售 vs 国网）", (diff>=0?"+":"")+fmt(diff,1), " 元/MWh", diff>=0?"c-green":"c-red") : ""}
+      ${saveFee!=null ? row("整体节省费用", (saveFee>=0?"+":"")+fmt(saveFee,2), " 万元", saveFee>=0?"c-green":"c-red") : ""}
+    </tbody></table>` : "";
+
   holder.innerHTML=`
     <div class="legend">${mo.m} 每小时电量（MWh，柱）与电价（元/MWh，线）双轴对比</div>
-    <div class="chart-sm" id="hourPriceChart" style="height:300px"></div>`;
+    <div class="chart-sm" id="hourPriceChart" style="height:300px"></div>
+    ${summaryHtml}`;
   if(gprice)gprice.dispose();
   gprice=echarts.init(document.getElementById("hourPriceChart"));
+  const series = [
+    {name:"小时电量(MWh)",type:"bar",data:mo.hourE,itemStyle:{color:"#2563eb"},barWidth:"50%"}
+  ];
+  if(hasP){
+    series.push({name:"零售电价(元/MWh)",type:"line",yAxisIndex:1,data:mo.price,step:"end",smooth:false,symbol:"circle",symbolSize:4,itemStyle:{color:"#f59e0b"},lineStyle:{width:2}});
+  }
+  if(gridPrices && gridPrices.some(v=>v!=null)){
+    series.push({name:"国网电价(元/MWh)",type:"line",yAxisIndex:1,data:gridPrices,step:"end",smooth:false,symbol:"circle",symbolSize:4,itemStyle:{color:"#dc2626"},lineStyle:{width:2}});
+  }
   gprice.setOption({
     tooltip:{trigger:"axis",formatter:ps=>{
       const idx=ps[0].dataIndex;
-      let s=`${idx+1}:00 时段<br/>`;
-      ps.forEach(e=>s+=`${e.marker}${e.seriesName}: ${e.value!=null?Number(e.value).toFixed(3):"-"}<br/>`);
+      let s=`<b>${idx}:00~${idx+1}:00</b><br/>`;
+      ps.forEach(e=>{ if(e.value!=null) s+=`${e.marker}${e.seriesName}: ${Number(e.value).toFixed(2)}<br/>`; });
       return s;}},
-    legend:{top:0,data:["小时电量(MWh)","电价(元/MWh)"]},
+    legend:{top:0,data:series.map(s=>s.name)},
     grid:{left:60,right:70,top:32,bottom:40},
     xAxis:{type:"category",data:[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23].map(h=>h+":00"),axisLabel:{fontSize:10}},
     yAxis:[{type:"value",name:"MWh",scale:true},{type:"value",name:"元/MWh",scale:true}],
-    series:[
-      {name:"小时电量(MWh)",type:"bar",data:mo.hourE,itemStyle:{color:"#2563eb"},barWidth:"50%"},
-      {name:"电价(元/MWh)",type:"line",yAxisIndex:1,data:mo.price,step:"end",smooth:false,symbol:"circle",symbolSize:4,itemStyle:{color:"#f59e0b"},lineStyle:{width:2}}
-    ]});
+    series});
 }
 
 // 峰谷平
-let pvPeak="10-12,18-21", pvValley="0-1,3-6,23-24";
-function drawPV(sel){
-  const peakR=parseRanges(pvPeak), valR=parseRanges(pvValley);
-  let hE=new Array(24).fill(0);
-  if(sel.isAll){
-    COMPANIES[selected].months.forEach(mo=>{
-      for(let h=0;h<24;h++)hE[h]+=mo.hourE[h]||0;
-    });
-  }else{
-    hE=sel.month.hourE.slice();
+// ---------- 国网电价 vs 用户电价 ----------
+function drawGridPrice(sel){
+  const body=document.getElementById("gridPriceBody");
+  if(ggridprice){ggridprice.dispose();ggridprice=null;}
+  // 仅 single-month 且有国网电价时渲染
+  let monthKey = sel.isAll ? null : (sel.month && sel.month.m);
+  if(!monthKey || !GRID_PRICE[monthKey]){
+    body.innerHTML='<div class="empty">请切换到单月视图后查看（国网电价按月对比）</div>';
+    return;
   }
-  const en={p:0,f:0,g:0};
-  const cls=[];
-  for(let h=0;h<24;h++){const k=inR(h,peakR)?"p":(inR(h,valR)?"g":"f");cls[h]=k;en[k]+=hE[h];}
-  const et=en.p+en.f+en.g;
-  document.getElementById("pvPanel").innerHTML=`
-    <div class="pv-editor">
-      <div><label>峰时段（小时）</label><input id="pvPeak" value="${pvPeak}"></div>
-      <div><label>谷时段（小时）</label><input id="pvValley" value="${pvValley}"></div>
-      <button class="btn" onclick="applyPV()">应用</button>
-      <span class="legend">格式：起始-结束，多段逗号分隔；其余为平</span>
-    </div>
-    <div class="legend">峰谷平电量构成（MWh）</div>
-    <div class="pv-sum">
-      <div class="it b"><div>峰段</div>
-        <div style="font-size:19px;font-weight:700;color:var(--red)">${fmt(en.p,1)}<small> MWh</small></div>
-        <div style="font-size:11px">占总电量 ${pct(en.p,et)}%</div>
-        <div class="bar"><i style="width:${et?en.p/et*100:0}%;background:var(--red)"></i></div></div>
-      <div class="it f"><div>平段</div>
-        <div style="font-size:19px;font-weight:700;color:var(--amber)">${fmt(en.f,1)}<small> MWh</small></div>
-        <div style="font-size:11px">占总电量 ${pct(en.f,et)}%</div>
-        <div class="bar"><i style="width:${et?en.f/et*100:0}%;background:var(--amber)"></i></div></div>
-      <div class="it g"><div>谷段</div>
-        <div style="font-size:19px;font-weight:700;color:var(--green)">${fmt(en.g,1)}<small> MWh</small></div>
-        <div style="font-size:11px">占总电量 ${pct(en.g,et)}%</div>
-        <div class="bar"><i style="width:${et?en.g/et*100:0}%;background:var(--green)"></i></div></div>
-    </div>
-    <div class="chart-sm" id="pvChart" style="height:240px"></div>`;
-  document.getElementById("pvPeak").addEventListener("input",e=>pvPeak=e.target.value);
-  document.getElementById("pvValley").addEventListener("input",e=>pvValley=e.target.value);
-  if(gpv)gpv.dispose();
-  gpv=echarts.init(document.getElementById("pvChart"));
-  const colors={p:"#ef4444",f:"#f59e0b",g:"#10b981"};
-  // 柱状图：每小时电量按峰谷平着色
-  const bdata=hE.map((v,h)=>({value:v,itemStyle:{color:colors[cls[h]]}}));
-  gpv.setOption({
-    tooltip:{trigger:"axis",formatter:ps=>{const idx=ps[0].dataIndex;
-      const k=cls[idx];
-      return `${idx}:00~${idx+1}:00　${k==="p"?"峰":(k==="g"?"谷":"平")}<br/>电量 ${fmt(hE[idx],2)} MWh`;}},
-    grid:{left:60,right:15,top:20,bottom:30},
-    xAxis:{type:"category",data:[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23].map(h=>h+":00"),axisLabel:{fontSize:10}},
-    yAxis:{type:"value",name:"MWh"},
-    series:[{type:"bar",data:bdata,barCategoryGap:"20%"}]
+  const gd = GRID_PRICE[monthKey];
+  const grid = gd.price;       // [24]
+  const user = sel.month && sel.month.price;  // [24] 用户电价（可能含 null）
+
+  const labels = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23].map(h=>h+":00");
+  body.innerHTML=`
+    <div class="legend">${monthKey} 每小时国网电价 vs 代理用户电价（元/MWh）</div>
+    <div class="chart-sm" id="gridPriceChart" style="height:300px"></div>`;
+  ggridprice = echarts.init(document.getElementById("gridPriceChart"));
+  const series = [];
+  series.push({
+    name:"国网电价", type:"line", data:grid.map(v=>v!=null?+v.toFixed(1):null),
+    smooth:false, symbol:"circle", symbolSize:5, step:"end",
+    lineStyle:{width:2, color:"#dc2626"}, itemStyle:{color:"#dc2626"}
+  });
+  if(user){
+    series.push({
+      name:"代理用户电价", type:"line", data:user.map(v=>v!=null?+v.toFixed(1):null),
+      smooth:false, symbol:"circle", symbolSize:5, step:"end",
+      lineStyle:{width:2, color:"#2563eb"}, itemStyle:{color:"#2563eb"}
+    });
+  }
+  ggridprice.setOption({
+    tooltip:{trigger:"axis",formatter:ps=>{
+      const idx=ps[0].dataIndex;
+      let s=`<b>${idx}:00~${idx+1}:00</b><br/>`;
+      ps.forEach(e=>{ if(e.value!=null) s+=`${e.marker}${e.seriesName}: ${Number(e.value).toFixed(1)} 元/MWh<br/>`; });
+      return s;
+    }},
+    legend:{top:0, data:["国网电价","代理用户电价"]},
+    grid:{left:55,right:15,top:30,bottom:30},
+    xAxis:{type:"category",data:labels,axisLabel:{fontSize:10}},
+    yAxis:{type:"value",name:"元/MWh",scale:true},
+    series
   });
 }
-function applyPV(){pvPeak=document.getElementById("pvPeak").value;pvValley=document.getElementById("pvValley").value;drawPV(compSel(selected,curMonth));}
 
 // ---------- 总览 ----------
 function drawOverall(){
@@ -433,7 +595,7 @@ function drawOverall(){
     series:[{name:"全市场日均",type:"line",smooth:true,symbol:"none",lineStyle:{width:2,color:"#8b5cf6"},areaStyle:{color:"rgba(139,92,246,0.12)"},data:D.overall}]
   });
 }
-window.addEventListener("resize",()=>[gdetail,gdaily,gpv,gprice,goverall,gmonthly].forEach(g=>g&&g.resize()));
+window.addEventListener("resize",()=>[gdetail,gdaily,gprice,goverall,gmonthly,ggridprice].forEach(g=>g&&g.resize()));
 
 // ============ 上传解析 ============
 const uS=document.getElementById("upStatus");
@@ -507,7 +669,7 @@ function parseWorkbook(buf){
   return {timeCols:tcols,months,overall,overallTotal:names.reduce((s,n)=>s+companies[n].total,0),companies};
 }
 function applyPayload(payload,label){
-  window.DASH_DATA=payload;D=payload;COMPANIES=payload.companies;TIME=payload.timeCols;MONTHS=payload.months||[];
+  window.DASH_DATA=payload;D=payload;COMPANIES=payload.companies;TIME=payload.timeCols;MONTHS=payload.months||[];GRID_PRICE=payload.gridPrice||{};
   sourceLabel=label;selected=null;curMonth='all';
   [gdetail,gdaily,gpv,gprice,goverall].forEach(g=>{if(g){g.dispose();}});
   document.getElementById("detailBody").innerHTML='<div class="empty">请从左侧选择一家企业查看分析</div>';

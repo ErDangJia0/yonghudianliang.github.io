@@ -158,6 +158,95 @@ if mode == "detailed":
         price_map.setdefault(mk, {})[comp] = arr
     print(f"[price] {len(price_map)} months, {sum(len(v) for v in price_map.values())} companies")
 
+    # ---- 国网电价（若存在） ----
+    # 结构：第 1 列"时段"（月份），后 24 列各为 "HH:MM-HH:MM" 范围
+    grid_price_map = {}  # {month: [24 floats]}
+    def _quartile_periods(prices):
+        """对 24h 国网电价按四分位数自动分类：尖峰 / 峰 / 平 / 谷
+        返回 [{type, start, end}]，相邻同档合并"""
+        from statistics import median
+        if not prices or all(p is None for p in prices):
+            return []
+        ps = [(h, p) for h, p in enumerate(prices) if p is not None]
+        if len(ps) < 2:
+            return []
+        vals = sorted([p for _, p in ps])
+        n = len(vals)
+        q1 = vals[n // 4]
+        q2 = median(vals)
+        q3 = vals[3 * n // 4]
+        buckets = []
+        for h, p in ps:
+            if p >= q3:
+                buckets.append("尖峰")
+            elif p >= q2:
+                buckets.append("峰")
+            elif p >= q1:
+                buckets.append("平")
+            else:
+                buckets.append("谷")
+        # 合并相邻同档
+        merged = []
+        cur_type, cur_start = buckets[0], 0
+        for h in range(1, len(buckets)):
+            if buckets[h] != cur_type:
+                merged.append({"type": cur_type, "start": cur_start, "end": h})
+                cur_type, cur_start = buckets[h], h
+        merged.append({"type": cur_type, "start": cur_start, "end": len(buckets)})
+        return merged
+    for sn in wb.sheetnames:
+        if "国网" in sn:
+            gs = wb[sn]
+            gh, grows = _read_header(gs)
+            # 找 24 个小时列：可能是 "HH:MM-HH:MM" 格式 或 数字 1..24
+            gh_idx = []
+            for i, x in enumerate(gh):
+                # 格式 A: "00:00-01:00" 这类时间范围
+                if isinstance(x, str) and "-" in x and ":" in x:
+                    try:
+                        lhs, _ = x.split("-")
+                        _h1, _m1 = lhs.split(":")
+                        gh_idx.append((i, int(_h1)))
+                    except Exception:
+                        pass
+                # 格式 B: 纯数字 1..24（表头是 "1","2",...,"24" 或整数）
+                else:
+                    n = None
+                    try:
+                        n = int(x) if x is not None else None
+                    except Exception:
+                        pass
+                    if n is not None and 1 <= n <= 24:
+                        gh_idx.append((i, n - 1))  # hour 从 0 开始
+            gh_idx.sort(key=lambda t: t[1])
+            if len(gh_idx) >= 20:  # 至少识别出 20 小时
+                for r in grows:
+                    if not r:
+                        continue
+                    m_key = month_key(r[0])
+                    if m_key is None:
+                        continue
+                    arr = []
+                    for i, _h in gh_idx:
+                        v = r[i] if i < len(r) else None
+                        try:
+                            arr.append(float(v) if v is not None and v != "" else None)
+                        except Exception:
+                            arr.append(None)
+                    # 补齐 24 小时（按小时数对齐）
+                    full = [None] * 24
+                    for i, hh in gh_idx:
+                        try:
+                            full[hh] = float(r[i]) if r[i] is not None else None
+                        except Exception:
+                            full[hh] = None
+                    grid_price_map[m_key] = {
+                        "price": full,
+                        "periods": _quartile_periods(full),
+                    }
+            print(f"[grid_price] {len(grid_price_map)} months from sheet '{sn}'")
+            break
+
     # ---- 电量 ----
     en_sheet = wb[wb.sheetnames[0]]
     h, rows = _read_header(en_sheet)
@@ -171,7 +260,8 @@ if mode == "detailed":
     acc_col = next((i for i, x in enumerate(h) if x == "户号"), None)
 
     class CompData:
-        __slots__ = ("slots", "days", "meters", "accs", "daily", "months", "max_load")
+        __slots__ = ("slots", "days", "meters", "accs", "daily", "months",
+                     "max_load", "max_load_points")
         def __init__(self):
             self.slots = [0.0] * len(time_cols)
             self.days = set()
@@ -180,6 +270,7 @@ if mode == "detailed":
             self.daily = {}
             self.months = {}
             self.max_load = 0.0
+            self.max_load_points = []  # [{date, time, slot}, ...]
 
     companies = {}
     n_rows = 0
@@ -216,7 +307,8 @@ if mode == "detailed":
         # 单次循环累加企业级和月级
         row_sum = 0.0
         if mk not in c.months:
-            c.months[mk] = {"days": set(), "slotS": [0.0] * len(time_cols)}
+            c.months[mk] = {"days": set(), "slotS": [0.0] * len(time_cols),
+                            "maxVal": 0.0, "maxPoints": []}
         m = c.months[mk]
         m["days"].add(dl_str)
         for idx, (i, hh, mm, _lbl) in enumerate(time_cols):
@@ -228,8 +320,24 @@ if mode == "detailed":
             c.slots[idx] += v
             m["slotS"][idx] += v
             row_sum += v
-            if v > c.max_load:
+            # 企业级全局 max：记录所有等于最大值的点（相对误差 < 0.1%，去重 + 上限 5 个）
+            if v > 0 and (c.max_load == 0 or v > c.max_load * 1.001):
                 c.max_load = v
+                c.max_load_points = [{"date": dl_str, "slot": idx, "time": time_cols[idx][3]}]
+            elif c.max_load > 0 and abs(v - c.max_load) / c.max_load < 0.001:
+                _key = (dl_str, idx)
+                if not any((p["date"], p["slot"]) == _key for p in c.max_load_points):
+                    if len(c.max_load_points) < 5:
+                        c.max_load_points.append({"date": dl_str, "slot": idx, "time": time_cols[idx][3]})
+            # per-month max：同上
+            if v > 0 and (m["maxVal"] == 0 or v > m["maxVal"] * 1.001):
+                m["maxVal"] = v
+                m["maxPoints"] = [{"date": dl_str, "slot": idx, "time": time_cols[idx][3]}]
+            elif m["maxVal"] > 0 and abs(v - m["maxVal"]) / m["maxVal"] < 0.001:
+                _key = (dl_str, idx)
+                if not any((p["date"], p["slot"]) == _key for p in m["maxPoints"]):
+                    if len(m["maxPoints"]) < 5:
+                        m["maxPoints"].append({"date": dl_str, "slot": idx, "time": time_cols[idx][3]})
         c.daily[dl_str] = c.daily.get(dl_str, 0.0) + row_sum
     print(f"[read] {n_rows} rows, {len(companies)} companies, {time.time()-t0:.1f}s")
     wb.close()
@@ -256,6 +364,9 @@ if mode == "detailed":
             if pr and any(p is not None for p in pr):
                 cost = sum(hourE[h] * pr[h] for h in range(24) if pr[h] is not None)
                 avgp = cost / energy if energy else None
+            # per-month max：原始 15min 电量（MWh）×4 得 MW，可能多个点
+            m_max_val = m["maxVal"]
+            m_max_points = m.get("maxPoints", [])
             months_arr.append({
                 "m": mk, "days": nd, "energy": round(energy, 2),
                 "mcurve": [round(v / nd, 4) for v in slotS],
@@ -263,17 +374,22 @@ if mode == "detailed":
                 "price": pr,
                 "cost": round(cost, 2) if cost is not None else None,
                 "avgPrice": round(avgp, 2) if avgp is not None else None,
+                "maxLoad": round(m_max_val * 4, 2) if m_max_val else 0.0,
+                "maxLoadPoints": m_max_points,  # [{date, time, slot}]
             })
             all_months.add(mk)
         months_arr.sort(key=lambda x: x["m"])
         dailylist = [{"d": d, "v": round(c.daily[d], 2)} for d in sorted(c.days)]
+        # 全局 max_load：原始 15min 电量（MWh）×4 得 MW，可能多个点
+        max_load_mw = round(c.max_load * 4, 2) if c.max_load else 0.0
         result_companies[nm] = {
             "total": round(sum(c.slots), 2),
             "nMeter": len([m for m in c.meters if m is not None]),
             "nAccount": len([a for a in c.accs if a is not None]),
             "daily": dailylist,
             "curve": curve,
-            "maxLoad": round(c.max_load, 4),
+            "maxLoad": max_load_mw,
+            "maxLoadPoints": c.max_load_points,  # [{date, time, slot}]
             "months": months_arr,
         }
         total_overall += sum(c.slots)
@@ -288,6 +404,7 @@ if mode == "detailed":
         "months": MONTHS,
         "overall": overall,
         "overallTotal": round(total_overall, 2),
+        "gridPrice": grid_price_map,  # {month: {price:[24], periods:[{type,start,end}]}}
         "companies": result_companies,
     }
 
