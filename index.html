@@ -158,7 +158,9 @@ let GRID_PRICE = D.gridPrice || {};  // {month: {price:[24], periods:[...]}}
 let selected=null, curMonth='all', sourceLabel='预置数据（data.js）';
 let grank = null, gdetail = null, gdaily = null, goverall = null, gpv = null, gprice = null, gmonthly = null, ggridprice = null;
 
-const fmt=(x,d=2)=>(x==null||isNaN(x))?"-":(+x).toFixed(d);
+const fmt=(x,d=3)=>(x==null||isNaN(x))?"-":(+x).toFixed(d);
+const fP=(x)=>fmt(x,1);  // 电价统一 1 位小数
+const fW=(x)=>fmt(x,2);  // 金额/万元统一 2 位小数
 const wardie=(x)=>x; // 电量已是 MWh
 const wanCost=(x)=>(x==null?null:x/10000); // 元 -> 万元
 const pct=(p,t)=>t>0?(p/t*100).toFixed(1):"0.0";
@@ -216,14 +218,14 @@ function setCards(names,totalE,totalC,meters,nPeriods,kind){
   const isSet=kind==='settlement';
   const cards=[
     {k:"代理企业总数",v:names.length,s:""},
-    {k:"累计总电量",v:fmt(wardie(totalE),1)||"0",s:"MWh"},
+    {k:"累计总电量",v:fmt(wardie(totalE))||"0",s:"MWh"},
     {k:"市场零售电价",v:fmt(totalC&&totalE?totalC/totalE:0,1)||"-",s:"元/MWh"},
   ];
   if(isSet){
-    cards.push({k:"月均总电量",v:fmt(wardie(totalE/Math.max(1,nPeriods)),1),s:"MWh"});
+    cards.push({k:"月均总电量",v:fmt(wardie(totalE/Math.max(1,nPeriods))),s:"MWh"});
     cards.push({k:"结算周期",v:nPeriods||0,s:"个月"});
   } else {
-    cards.push({k:"日均总电量",v:fmt(wardie(totalE/Math.max(1,nPeriods)),1),s:"MWh"});
+    cards.push({k:"日均总电量",v:fmt(wardie(totalE/Math.max(1,nPeriods))),s:"MWh"});
     cards.push({k:"代理计量点总数",v:meters||0,s:""});
   }
   cards.push({k:"前10企业电量占比",v:top10share()+"%",s:""});
@@ -241,7 +243,7 @@ function buildRank(list){
   const render=arr=>tbody.innerHTML=arr.map((n,i)=>{
     const c=COMPANIES[n]; const agg=compSel(n,'all');
     return `<tr class="row" data-name="${esc(n)}"><td>${esc(n)}</td>
-      <td>${fmt(c.total,1)}</td><td>${agg.avgPrice!=null?fmt(agg.avgPrice,1):"-"}</td></tr>`;
+      <td>${fmt(c.total)}</td><td>${agg.avgPrice!=null?fmt(agg.avgPrice,1):"-"}</td></tr>`;
   }).join("")||'<tr><td colspan=3 style="text-align:center;color:#9ca3af">未找到相关企业</td></tr>';
   render(list?Object.keys(COMPANIES).filter(x=>x.includes(list)).sort((a,b)=>COMPANIES[b].total-COMPANIES[a].total):Object.keys(COMPANIES).sort((a,b)=>COMPANIES[b].total-COMPANIES[a].total));
   tbody.querySelectorAll("tr.row").forEach(tr=>tr.addEventListener("click",()=>{
@@ -351,7 +353,7 @@ function drawDaily(){
   if(gdaily)gdaily.dispose();
   gdaily=echarts.init(document.getElementById("dailyChart"));
   gdaily.setOption({
-    tooltip:{trigger:"axis",valueFormatter:v=>fmt(wardie(v),2)+" MWh"},
+    tooltip:{trigger:"axis",valueFormatter:v=>fmt(wardie(v),3)+" MWh"},
     grid:{left:55,right:15,top:15,bottom:45},
     xAxis:{type:"category",data:dlist.map(d=>d.d),axisLabel:{rotate:45,fontSize:10}},
     yAxis:{type:"value",name:"MWh"},
@@ -437,18 +439,27 @@ function drawPrice(sel){
     holder.innerHTML=`
       <div class="legend">各月电量、零售电价 vs 国网电价（节省情况重点对比）</div>
       <table class="mini-table"><thead><tr>
-        <th>月份</th><th class="r">电量(MWh)</th><th class="r">零售电价(元/MWh)</th><th class="r">国网电价(元/MWh)</th><th class="r">度电节省</th><th class="r">节省费用(万元)</th>
+        <th>月份</th><th class="r">电量(MWh)</th><th class="r">零售电价(元/MWh)</th><th class="r">国网电价(元/MWh)</th><th class="r">度电节省(元/MWh)</th><th class="r">节省费用(万元)</th>
       </tr></thead><tbody>${rows}${totalRow}</tbody></table>
       <div class="chart-sm" id="monthPriceChart" style="height:260px;margin-top:10px"></div>`;
     if(gprice)gprice.dispose();
     gprice=echarts.init(document.getElementById("monthPriceChart"));
     const series=[
-      {name:"电量(MWh)",type:"bar",data:monthsWithCalc.map(m=>m.energy),itemStyle:{color:"#2563eb"},barWidth:"40%"},
-      {name:"零售电价(元/MWh)",type:"line",yAxisIndex:1,data:monthsWithCalc.map(m=>m.avgPrice!=null?m.avgPrice:null),smooth:true,itemStyle:{color:"#f59e0b"},lineStyle:{width:2}},
-      {name:"国网电价(元/MWh)",type:"line",yAxisIndex:1,data:monthsWithCalc.map(m=>m.gridW!=null?m.gridW:null),smooth:true,itemStyle:{color:"#dc2626"},lineStyle:{width:2}}
+      {name:"电量(MWh)",type:"bar",data:monthsWithCalc.map(m=>+m.energy.toFixed(3)),itemStyle:{color:"#2563eb"},barWidth:"40%"},
+      {name:"零售电价(元/MWh)",type:"line",yAxisIndex:1,data:monthsWithCalc.map(m=>m.avgPrice!=null?+m.avgPrice.toFixed(1):null),smooth:true,itemStyle:{color:"#f59e0b"},lineStyle:{width:2}},
+      {name:"国网电价(元/MWh)",type:"line",yAxisIndex:1,data:monthsWithCalc.map(m=>m.gridW!=null?+m.gridW.toFixed(1):null),smooth:true,itemStyle:{color:"#dc2626"},lineStyle:{width:2}}
     ];
     gprice.setOption({
-      tooltip:{trigger:"axis"},
+      tooltip:{trigger:"axis",formatter:ps=>{
+        let s=`<b>${ps[0].axisValue}</b><br/>`;
+        ps.forEach(e=>{
+          if(e.value!=null){
+            const d = e.seriesName.includes("电量") ? 3 : 1;
+            const u = e.seriesName.includes("电量") ? " MWh" : " 元/MWh";
+            s+=`${e.marker}${e.seriesName}: ${(+e.value).toFixed(d)}${u}<br/>`;
+          }
+        });
+        return s;}},
       legend:{top:0,data:series.map(s=>s.name)},
       grid:{left:60,right:70,top:28,bottom:30},
       xAxis:{type:"category",data:monthsWithCalc.map(m=>m.m)},
@@ -520,7 +531,13 @@ function drawPrice(sel){
     tooltip:{trigger:"axis",formatter:ps=>{
       const idx=ps[0].dataIndex;
       let s=`<b>${idx}:00~${idx+1}:00</b><br/>`;
-      ps.forEach(e=>{ if(e.value!=null) s+=`${e.marker}${e.seriesName}: ${Number(e.value).toFixed(2)}<br/>`; });
+      ps.forEach(e=>{
+        if(e.value!=null){
+          const d = e.seriesName.includes("电量") ? 3 : (e.seriesName.includes("电价") ? 1 : 2);
+          const u = e.seriesName.includes("电量") ? " MWh" : (e.seriesName.includes("电价") ? " 元/MWh" : "");
+          s+=`${e.marker}${e.seriesName}: ${(+e.value).toFixed(d)}${u}<br/>`;
+        }
+      });
       return s;}},
     legend:{top:0,data:series.map(s=>s.name)},
     grid:{left:60,right:70,top:32,bottom:40},
@@ -588,7 +605,7 @@ function drawOverall(){
   }
   goverall=echarts.init(document.getElementById("overallChart"));
   goverall.setOption({
-    tooltip:{trigger:"axis",valueFormatter:v=>fmt(wardie(v),2)+" MWh"},
+    tooltip:{trigger:"axis",valueFormatter:v=>fmt(wardie(v),3)+" MWh"},
     grid:{left:55,right:15,top:25,bottom:30},
     xAxis:{type:"category",data:TIME,axisLabel:{interval:7,fontSize:10}},
     yAxis:{type:"value",name:"MWh",scale:true},
