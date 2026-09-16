@@ -58,6 +58,19 @@
   .up-hint{font-size:13px;color:var(--muted);margin-bottom:10px}
   .up-status{font-size:12px;margin-top:10px}.up-status.ok{color:var(--green);font-weight:600}.up-status.err{color:var(--red);font-weight:600}
   .mini-table{width:100%;font-size:12px}.mini-table th,.mini-table td{padding:6px 8px}
+  .fee-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+  .fee-chip{font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:16px;padding:5px 12px;background:#fff}
+  .fee-chip b{color:var(--text);font-weight:600;margin-left:6px}
+  .fee-chip.fee-total{background:#fef2f2;border-color:#fecaca}
+  .fee-chip.fee-total b{color:var(--red)}
+  .fee-table{min-width:560px}
+  .fee-table th,.fee-table td{text-align:center !important;font-variant-numeric:tabular-nums}
+  .fee-table thead th{white-space:normal;line-height:1.4;padding:10px 8px}
+  .fee-table tbody tr:nth-child(even){background:#fafbfe}
+  .fee-table tbody tr:hover{background:#eff6ff}
+  .fee-table td:first-child,.fee-table th:first-child{text-align:center !important;font-weight:600;color:var(--text)}
+  .fee-table .fee-total-c{font-weight:700;background:#eef4ff;color:#1d4ed8}
+  .fee-table tbody tr:last-child .fee-total-c{background:#dbeafe}
 
   /* ========== 移动端响应式 ========== */
   @media (max-width: 768px){
@@ -156,7 +169,7 @@ let TIME = (D.timeCols || []);
 let MONTHS = D.months || [];
 let GRID_PRICE = D.gridPrice || {};  // {month: {price:[24], periods:[...]}}
 let selected=null, curMonth='all', sourceLabel='预置数据（data.js）';
-let grank = null, gdetail = null, gdaily = null, goverall = null, gpv = null, gprice = null, gmonthly = null, ggridprice = null;
+let grank = null, gdetail = null, gdaily = null, goverall = null, gpv = null, gprice = null, gmonthly = null, ggridprice = null, gfees = null;
 
 const fmt=(x,d=3)=>(x==null||isNaN(x))?"-":(+x).toFixed(d);
 const fP=(x)=>fmt(x,1);  // 电价统一 1 位小数
@@ -267,6 +280,7 @@ function selectCompany(name){
       <div class="panel" style="margin-top:18px"><h2>电价 · 电量对比</h2><div id="priceBody"></div></div>
       <div class="legend" style="margin-top:18px">每日总电量（MWh）</div>
       <div class="chart-sm" id="dailyChart"></div>
+      <div class="panel" style="margin-top:18px"><h2>国网其他费用明细</h2><div id="feesBody"></div></div>
       <div class="panel" style="margin-top:18px"><h2>国网电价 vs 用户电价</h2><div id="gridPriceBody"></div></div>
       <div class="legend" style="margin-top:18px">电量 96 时段负荷曲线（15min 电量，单位：MWh）</div>
       <div class="chart-sm" id="detailChart"></div>`;
@@ -318,6 +332,7 @@ function renderCompany(){
     drawDetail(sel);
     drawPrice(sel);
     drawDaily();
+    drawFees();
     drawGridPrice(sel);
   } else {
     // settlement: KPI + 月度表格 + 电量/电价对比
@@ -358,6 +373,52 @@ function drawDaily(){
     xAxis:{type:"category",data:dlist.map(d=>d.d),axisLabel:{rotate:45,fontSize:10}},
     yAxis:{type:"value",name:"MWh"},
     series:[{type:"bar",data:dlist.map(d=>d.v),itemStyle:{borderRadius:[3,3,0,0],color:"#10b981"},barWidth:"55%"}]
+  });
+}
+
+// 国网其他费用明细：固定项堆积在下、月度变化项在上
+function drawFees(){
+  const holder=document.getElementById("feesBody");
+  if(!holder)return;
+  const f=D.gridFees;
+  if(!f||!f.items||!f.items.length){holder.innerHTML='<div class="empty">无国网其他费用明细数据</div>';return;}
+  // 配色：固定项冷色（下方），变化项暖色（上方）
+  const fixedC=['#94a3b8','#60a5fa','#34d399'], varC=['#fbbf24','#fb923c','#f87171','#a78bfa'];
+  let fi=0,vi=0;
+  const colors=f.items.map(it=>it.fixed?fixedC[fi++%fixedC.length]:varC[vi++%varC.length]);
+  // 均值 chips
+  const chips=f.items.map((it,idx)=>`<span class="fee-chip" style="border-color:${colors[idx]}">${esc(it.name)}<b>${it.fixed?'固定':'月均'} ${fP(it.mean)}</b></span>`).join("");
+  // 明细表
+  const head=f.items.map(it=>`<th class="r">${esc(it.name)}</th>`).join("");
+  const rows=f.months.map((m,mi)=>{
+    const tds=f.items.map(it=>`<td class="r">${it.values[mi]!=null?fP(it.values[mi]):"-"}</td>`).join("");
+    return `<tr><td>${m}</td>${tds}<td class="r fee-total-c">${fP(f.monthlyTotal[mi])}</td></tr>`;
+  }).join("");
+  const meanRow=`<tr style="font-weight:600;background:#f8fafc"><td>月均</td>${f.items.map(it=>`<td class="r">${fP(it.mean)}</td>`).join("")}<td class="r fee-total-c">${fP(f.totalMean)}</td></tr>`;
+  holder.innerHTML=`
+    <div class="legend">单位 元/MWh。固定费用（各月不变）堆积在下方，月度变化费用堆积在上方；柱顶为当月各项合计，红色虚线为全部月份合计均值。</div>
+    <div class="fee-chips">${chips}<span class="fee-chip fee-total"><b>月均合计 ${fP(f.totalMean)} 元/MWh</b></span></div>
+    <div class="chart-sm" id="feesChart" style="height:300px"></div>
+    <div style="overflow-x:auto"><table class="mini-table fee-table" style="margin-top:10px"><thead><tr><th>月份</th>${head}<th class="r">月合计</th></tr></thead><tbody>${rows}${meanRow}</tbody></table></div>`;
+  if(gfees)gfees.dispose();
+  gfees=echarts.init(document.getElementById("feesChart"));
+  const lastIdx=f.items.length-1;
+  gfees.setOption({
+    tooltip:{trigger:"axis",axisPointer:{type:"shadow"},formatter:ps=>{
+      let s=`<b>${ps[0].axisValue}</b><br/>`,total=0;
+      ps.forEach(e=>{if(e.value!=null){s+=`${e.marker}${e.seriesName}: ${fP(e.value)} 元/MWh<br/>`;total+=+e.value;}});
+      return s+`当月合计: <b>${fP(total)}</b> 元/MWh`;
+    }},
+    legend:{top:0,type:"scroll"},
+    grid:{left:55,right:20,top:44,bottom:30},
+    xAxis:{type:"category",data:f.months},
+    yAxis:{type:"value",name:"元/MWh",min:0},
+    series:f.items.map((it,idx)=>({
+      name:it.name+(it.fixed?"（固定）":""),
+      type:"bar",stack:"fee",data:it.values,itemStyle:{color:colors[idx]},barWidth:"45%",
+      label:idx===lastIdx?{show:true,position:"top",formatter:p=>fP(f.monthlyTotal[p.dataIndex]),fontSize:11,fontWeight:600}:{show:false},
+      markLine:idx===lastIdx?{symbol:"none",silent:true,lineStyle:{type:"dashed",color:"#dc2626",width:1.5},data:[{yAxis:f.totalMean,label:{formatter:`月均合计 ${fP(f.totalMean)}`,color:"#dc2626",fontSize:11,position:"insideEndTop"}}]}:undefined
+    }))
   });
 }
 
@@ -612,7 +673,7 @@ function drawOverall(){
     series:[{name:"全市场日均",type:"line",smooth:true,symbol:"none",lineStyle:{width:2,color:"#8b5cf6"},areaStyle:{color:"rgba(139,92,246,0.12)"},data:D.overall}]
   });
 }
-window.addEventListener("resize",()=>[gdetail,gdaily,gprice,goverall,gmonthly,ggridprice].forEach(g=>g&&g.resize()));
+window.addEventListener("resize",()=>[gdetail,gdaily,gprice,goverall,gmonthly,ggridprice,gfees].forEach(g=>g&&g.resize()));
 
 // ============ 上传解析 ============
 const uS=document.getElementById("upStatus");

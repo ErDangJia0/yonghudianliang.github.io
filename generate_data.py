@@ -195,7 +195,7 @@ if mode == "detailed":
         merged.append({"type": cur_type, "start": cur_start, "end": len(buckets)})
         return merged
     for sn in wb.sheetnames:
-        if "国网" in sn:
+        if "国网" in sn and "费用" not in sn:
             gs = wb[sn]
             gh, grows = _read_header(gs)
             # 找 24 个小时列：可能是 "HH:MM-HH:MM" 格式 或 数字 1..24
@@ -245,6 +245,65 @@ if mode == "detailed":
                         "periods": _quartile_periods(full),
                     }
             print(f"[grid_price] {len(grid_price_map)} months from sheet '{sn}'")
+            break
+
+    # ---- 国网其他费用明细（若存在） ----
+    # 结构：第 1 列月份（"1月"），其余各列每列为一种费用（表头含"元/兆瓦时"）
+    grid_fees = None
+    for sn in wb.sheetnames:
+        if "费用" in sn:
+            fs = wb[sn]
+            fh, frows_data = _read_header(fs)
+            # 费用列：表头为字符串、含"元/兆瓦时"或"兆瓦时"
+            fee_cols = []
+            for i, x in enumerate(fh):
+                if i == 0 or not isinstance(x, str):
+                    continue
+                if "兆瓦时" in x or "MWh" in x.upper():
+                    short = x
+                    for u in ("（元/兆瓦时）", "(元/兆瓦时)", "（元/MWh）", "(元/MWh)"):
+                        short = short.replace(u, "")
+                    fee_cols.append((i, short.strip()))
+            if not fee_cols:
+                continue
+            fee_months = []
+            fee_matrix = {name: [] for _, name in fee_cols}
+            for r in frows_data:
+                if not r:
+                    continue
+                m_key = month_key(r[0])
+                if m_key is None:
+                    continue
+                fee_months.append(m_key)
+                for i, name in fee_cols:
+                    v = r[i] if i < len(r) else None
+                    try:
+                        fee_matrix[name].append(round(float(v), 4) if v is not None and v != "" else None)
+                    except Exception:
+                        fee_matrix[name].append(None)
+            if fee_months:
+                n_m = len(fee_months)
+                items = []
+                for _i, name in fee_cols:
+                    vals = fee_matrix[name]
+                    nums = [v for v in vals if v is not None]
+                    mean = round(sum(nums) / len(nums), 3) if nums else None
+                    fixed = bool(nums) and (max(nums) - min(nums) < 0.001)
+                    items.append({"name": name, "values": vals, "mean": mean, "fixed": fixed})
+                # 固定项排前（堆积图在下方），变化项排后（上方）
+                items.sort(key=lambda it: (0 if it["fixed"] else 1,))
+                monthly_total = []
+                for mi in range(n_m):
+                    s = sum(it["values"][mi] for it in items if it["values"][mi] is not None)
+                    monthly_total.append(round(s, 3))
+                total_mean = round(sum(monthly_total) / n_m, 3) if n_m else None
+                grid_fees = {
+                    "months": fee_months,
+                    "items": items,
+                    "monthlyTotal": monthly_total,
+                    "totalMean": total_mean,
+                }
+                print(f"[grid_fees] {n_m} months, {len(items)} items from sheet '{sn}'")
             break
 
     # ---- 电量 ----
@@ -405,6 +464,7 @@ if mode == "detailed":
         "overall": overall,
         "overallTotal": round(total_overall, 2),
         "gridPrice": grid_price_map,  # {month: {price:[24], periods:[{type,start,end}]}}
+        "gridFees": grid_fees,  # {months, items:[{name,values,mean,fixed}], monthlyTotal, totalMean}
         "companies": result_companies,
     }
 
