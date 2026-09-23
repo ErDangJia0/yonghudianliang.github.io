@@ -133,6 +133,10 @@
     <div>
       <div class="panel">
         <h2>企业用电排名</h2>
+        <div class="mseg" id="rankSeg" style="margin-bottom:12px">
+          <button data-metric="total" class="on">总电量</button>
+          <button data-metric="price">零售电价</button>
+        </div>
         <div class="rank"><input type="text" id="search" placeholder="搜索企业名称…"></div>
         <div class="rank-scroll"><table>
           <thead><tr><th>企业名称</th><th>总电量(MWh)</th><th>零售电价(元/MWh)</th></tr></thead>
@@ -169,6 +173,7 @@ let TIME = (D.timeCols || []);
 let MONTHS = D.months || [];
 let GRID_PRICE = D.gridPrice || {};  // {month: {price:[24], periods:[...]}}
 let selected=null, curMonth='all', sourceLabel='预置数据（data.js）';
+let rankMetric='total';  // 排名排序指标：total=总电量 / price=零售电价
 let grank = null, gdetail = null, gdaily = null, goverall = null, gpv = null, gprice = null, gmonthly = null, ggridprice = null, gfees = null;
 
 const fmt=(x,d=3)=>(x==null||isNaN(x))?"-":(+x).toFixed(d);
@@ -253,18 +258,34 @@ function top10share(){
 function buildRank(list){
   const total=Object.keys(COMPANIES).reduce((s,n)=>s+COMPANIES[n].total,0);
   const tbody=document.getElementById("rankBody");
+  // 排序值：total=累计电量（降序），price=零售加权电价（升序）
+  const score=n=>{
+    if(rankMetric==='price'){
+      const agg=compSel(n,'all');
+      return agg.avgPrice!=null?agg.avgPrice:Infinity;
+    }
+    return COMPANIES[n].total;
+  };
   const render=arr=>tbody.innerHTML=arr.map((n,i)=>{
     const c=COMPANIES[n]; const agg=compSel(n,'all');
     return `<tr class="row" data-name="${esc(n)}"><td>${esc(n)}</td>
       <td>${fmt(c.total)}</td><td>${agg.avgPrice!=null?fmt(agg.avgPrice,1):"-"}</td></tr>`;
   }).join("")||'<tr><td colspan=3 style="text-align:center;color:#9ca3af">未找到相关企业</td></tr>';
-  render(list?Object.keys(COMPANIES).filter(x=>x.includes(list)).sort((a,b)=>COMPANIES[b].total-COMPANIES[a].total):Object.keys(COMPANIES).sort((a,b)=>COMPANIES[b].total-COMPANIES[a].total));
+  const base=list?Object.keys(COMPANIES).filter(x=>x.includes(list)):Object.keys(COMPANIES);
+  render(base.sort((a,b)=>rankMetric==='price'?score(a)-score(b):score(b)-score(a)));
   tbody.querySelectorAll("tr.row").forEach(tr=>tr.addEventListener("click",()=>{
     tbody.querySelectorAll("tr.row").forEach(x=>x.classList.remove("sel"));tr.classList.add("sel");
     selectCompany(unescape(tr.getAttribute("data-name")));
   }));
 }
 document.getElementById("search").addEventListener("input",e=>buildRank(e.target.value.trim()));
+document.getElementById("rankSeg").addEventListener("click",e=>{
+  const b=e.target.closest("button"); if(!b)return;
+  document.querySelectorAll("#rankSeg button").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");
+  rankMetric=b.getAttribute("data-metric");
+  buildRank(document.getElementById("search").value.trim());
+});
 
 // ---------- 企业详情 ----------
 function selectCompany(name){
