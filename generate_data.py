@@ -15,16 +15,37 @@ def _list_xlsx(top):
         for f in os.listdir(top):
             if f.endswith(".xlsx") and not f.startswith("~$"):
                 yield os.path.join(top, f)
-    except FileNotFoundError:
+    except OSError:
         pass
+
+
+def _search_dirs():
+    """候选搜索目录（按优先级）：脚本所在目录 → 当前工作目录 → 桌面。
+    桌面路径动态解析，不硬编码用户名，迁移到其他机器/目录也能用。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    dirs = [here]
+    cwd = os.getcwd()
+    for d in (cwd, os.path.join(os.path.expanduser("~"), "Desktop")):
+        try:
+            ap = os.path.abspath(d)
+        except OSError:
+            continue
+        if ap not in [os.path.abspath(x) for x in dirs] and os.path.isdir(ap):
+            dirs.append(ap)
+    return dirs
+
 
 # 支持 python generate_data.py "C:\xxx\新表.xlsx" 手动指定
 SRC = sys.argv[1] if len(sys.argv) > 1 else None
 if SRC and not os.path.exists(SRC):
+    print(f"[warn] 指定路径不存在，回退到自动探测：{sys.argv[1]}")
     SRC = None
 
 if SRC is None:
-    CANDIDATES = list(_list_xlsx(r"C:\Users\WHY\Desktop")) + list(_list_xlsx(os.path.dirname(os.path.abspath(__file__))))
+    SEARCH_DIRS = _search_dirs()
+    CANDIDATES = []
+    for d in SEARCH_DIRS:
+        CANDIDATES.extend(_list_xlsx(d))
     best_mtime = 0
     for p in CANDIDATES:
         try:
@@ -32,10 +53,12 @@ if SRC is None:
             if mt > best_mtime:
                 best_mtime = mt
                 SRC = p
-        except FileNotFoundError:
+        except OSError:
             pass
-if not SRC:
-    raise SystemExit("未找到电量表 xlsx")
+    if SRC is None:
+        raise SystemExit("未找到电量表 xlsx。已搜索目录：\n  - " +
+                         "\n  - ".join(SEARCH_DIRS) +
+                         "\n请手动指定：python generate_data.py \"<路径>\\电量表.xlsx\"")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.js")
 print(f"[source] {SRC} ({os.path.getsize(SRC)/1024/1024:.1f} MB)")
 t0 = time.time()
@@ -161,39 +184,6 @@ if mode == "detailed":
     # ---- 国网电价（若存在） ----
     # 结构：第 1 列"时段"（月份），后 24 列各为 "HH:MM-HH:MM" 范围
     grid_price_map = {}  # {month: [24 floats]}
-    def _quartile_periods(prices):
-        """对 24h 国网电价按四分位数自动分类：尖峰 / 峰 / 平 / 谷
-        返回 [{type, start, end}]，相邻同档合并"""
-        from statistics import median
-        if not prices or all(p is None for p in prices):
-            return []
-        ps = [(h, p) for h, p in enumerate(prices) if p is not None]
-        if len(ps) < 2:
-            return []
-        vals = sorted([p for _, p in ps])
-        n = len(vals)
-        q1 = vals[n // 4]
-        q2 = median(vals)
-        q3 = vals[3 * n // 4]
-        buckets = []
-        for h, p in ps:
-            if p >= q3:
-                buckets.append("尖峰")
-            elif p >= q2:
-                buckets.append("峰")
-            elif p >= q1:
-                buckets.append("平")
-            else:
-                buckets.append("谷")
-        # 合并相邻同档
-        merged = []
-        cur_type, cur_start = buckets[0], 0
-        for h in range(1, len(buckets)):
-            if buckets[h] != cur_type:
-                merged.append({"type": cur_type, "start": cur_start, "end": h})
-                cur_type, cur_start = buckets[h], h
-        merged.append({"type": cur_type, "start": cur_start, "end": len(buckets)})
-        return merged
     for sn in wb.sheetnames:
         if "国网" in sn and "费用" not in sn:
             gs = wb[sn]
@@ -240,10 +230,7 @@ if mode == "detailed":
                             full[hh] = float(r[i]) if r[i] is not None else None
                         except Exception:
                             full[hh] = None
-                    grid_price_map[m_key] = {
-                        "price": full,
-                        "periods": _quartile_periods(full),
-                    }
+                    grid_price_map[m_key] = full
             print(f"[grid_price] {len(grid_price_map)} months from sheet '{sn}'")
             break
 
@@ -463,7 +450,7 @@ if mode == "detailed":
         "months": MONTHS,
         "overall": overall,
         "overallTotal": round(total_overall, 2),
-        "gridPrice": grid_price_map,  # {month: {price:[24], periods:[{type,start,end}]}}
+        "gridPrice": grid_price_map,  # {month: [24 个小时电价]}
         "gridFees": grid_fees,  # {months, items:[{name,values,mean,fixed}], monthlyTotal, totalMean}
         "companies": result_companies,
     }
