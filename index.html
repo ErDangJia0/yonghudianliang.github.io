@@ -43,7 +43,14 @@
   .mseg{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
   .mseg button{padding:6px 14px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--muted);font-size:12px;cursor:pointer}
   .mseg button.on{background:var(--blue);color:#fff;border-color:var(--blue);font-weight:600}
+  .pv-editor{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
+  .pv-editor label{font-size:12px;color:var(--muted)} .pv-editor input{width:128px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font-size:12px}
   .btn{padding:7px 14px;border:none;border-radius:8px;background:var(--blue);color:#fff;font-size:12px;cursor:pointer}
+  .pv-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
+  .pv-sum .it{text-align:center;padding:10px;border-radius:10px;border:1px solid var(--line)}
+  .pv-sum .it.b{background:#fef2f2;border-color:#fecaca}.pv-sum .it.f{background:#fefce8;border-color:#fde68a}.pv-sum .it.g{background:#ecfdf5;border-color:#a7f3d0}
+  .bar{height:8px;border-radius:4px;background:#eef0f5;overflow:hidden;margin-top:6px}.bar>i{display:block;height:100%;border-radius:4px}
+  .pgrid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
   .empty{color:var(--muted);text-align:center;padding:40px;font-size:13px}
   footer{text-align:center;color:var(--muted);font-size:12px;padding:20px}
   .up-drop{border:2px dashed var(--line);border-radius:10px;padding:18px;text-align:center;transition:.2s}
@@ -113,7 +120,7 @@
 
   <div class="panel" id="uploadPanel">
     <h2>上传数据（可选）</h2>
-    <div class="legend">① 小文件（≤15MB）：直接上传 Excel 即时分析；② 大文件（>15MB，如历史电量表）：请将 Excel 放到本页所在目录（脚本同目录）运行 <code style="background:#eef2ff;color:#2563eb;padding:1px 6px;border-radius:4px">python generate_data.py</code> 预生成 data.js 后刷新页面。支持的工作表：电量（96 个 15 分钟时段）+ 电价（月份×企业×24 小时，单位 元/MWh）。</div>
+    <div class="legend">① 小文件（≤15MB）：直接上传 Excel 即时分析；② 大文件（>15MB，如历史电量表）：请将 Excel 放到 CCC 目录运行 <code style="background:#eef2ff;color:#2563eb;padding:1px 6px;border-radius:4px">python generate_data.py</code> 预生成 data.js 后刷新页面。支持的工作表：电量（96 个 15 分钟时段）+ 电价（月份×企业×24 小时，单位 元/MWh）。</div>
     <div class="up-drop" id="dropZone">
       <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none">
       <div class="up-hint">点击选择 Excel 文件，或将文件拖拽到此处（≤15MB 可直接解析）</div>
@@ -164,7 +171,7 @@ const HAS_DETAIL = MODE === 'detailed';
 let COMPANIES = D.companies;
 let TIME = (D.timeCols || []);
 let MONTHS = D.months || [];
-let GRID_PRICE = D.gridPrice || {};  // {month: [24 个小时电价]}
+let GRID_PRICE = D.gridPrice || {};  // {month: {price:[24], periods:[...]}}
 let selected=null, curMonth='all', sourceLabel='预置数据（data.js）';
 let rankMetric='total';  // 排名排序指标：total=总电量 / price=零售电价
 let grank = null, gdetail = null, gdaily = null, goverall = null, gpv = null, gprice = null, gmonthly = null, ggridprice = null, gfees = null;
@@ -176,6 +183,10 @@ const wardie=(x)=>x; // 电量已是 MWh
 const wanCost=(x)=>(x==null?null:x/10000); // 元 -> 万元
 const pct=(p,t)=>t>0?(p/t*100).toFixed(1):"0.0";
 const esc=s=>(s||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+
+function slotHour(i){if(!TIME[i])return 23;const m=/^(\d{2}):(\d{2})$/.exec(TIME[i]);if(!m)return 23;const h=+m[1];return h>=24?23:Math.min(23,h);}
+function parseRanges(s){const res=[];s.split(/[,，;；\s]+/).forEach(t=>{const m=/(\d{1,2})\s*[-~至]\s*(\d{1,2})/.exec(t);if(m){let a=+m[1],b=+m[2];if(a>b){let t=a;a=b;b=t;}res.push([a,b]);}});return res;}
+const inR=(h,rs)=>rs.some(r=>h>=r[0]&&h<r[1]);
 
 // 所选范围（全部/月）下的企业汇总
 function compSel(name,mk){
@@ -245,6 +256,7 @@ function top10share(){
   return all?(top/all*100).toFixed(1):"0";
 }
 function buildRank(list){
+  const total=Object.keys(COMPANIES).reduce((s,n)=>s+COMPANIES[n].total,0);
   const tbody=document.getElementById("rankBody");
   // 排序值：total=累计电量（降序），price=零售加权电价（升序）
   const score=n=>{
@@ -254,22 +266,16 @@ function buildRank(list){
     }
     return COMPANIES[n].total;
   };
-  // 点击时回传行序号而非企业名：避免 HTML 属性转义 / 反转义往返导致名称失真
-  let curList=[];
-  const render=arr=>{
-    curList=arr;
-    tbody.innerHTML=arr.map((n,i)=>{
-      const c=COMPANIES[n]; const agg=compSel(n,'all');
-      return `<tr class="row" data-idx="${i}"><td>${esc(n)}</td>
+  const render=arr=>tbody.innerHTML=arr.map((n,i)=>{
+    const c=COMPANIES[n]; const agg=compSel(n,'all');
+    return `<tr class="row" data-name="${esc(n)}"><td>${esc(n)}</td>
       <td>${fmt(c.total)}</td><td>${agg.avgPrice!=null?fmt(agg.avgPrice,1):"-"}</td></tr>`;
-    }).join("")||'<tr><td colspan=3 style="text-align:center;color:#9ca3af">未找到相关企业</td></tr>';
-  };
+  }).join("")||'<tr><td colspan=3 style="text-align:center;color:#9ca3af">未找到相关企业</td></tr>';
   const base=list?Object.keys(COMPANIES).filter(x=>x.includes(list)):Object.keys(COMPANIES);
   render(base.sort((a,b)=>rankMetric==='price'?score(a)-score(b):score(b)-score(a)));
   tbody.querySelectorAll("tr.row").forEach(tr=>tr.addEventListener("click",()=>{
     tbody.querySelectorAll("tr.row").forEach(x=>x.classList.remove("sel"));tr.classList.add("sel");
-    const n=curList[+tr.getAttribute("data-idx")];
-    if(n)selectCompany(n);
+    selectCompany(unescape(tr.getAttribute("data-name")));
   }));
 }
 document.getElementById("search").addEventListener("input",e=>buildRank(e.target.value.trim()));
@@ -460,7 +466,7 @@ function drawPrice(sel){
   if(sel.isAll){ // 月度汇总：电量柱 + 零售/国网双电价线 + 节省费用表
     // 每月计算国网加权电价 + 节省
     const monthsWithCalc = sel.months.map(mo=>{
-      const gp = GRID_PRICE[mo.m] || null;
+      const gp = GRID_PRICE[mo.m] ? GRID_PRICE[mo.m].price : null;
       let gridW=null, diff=null, saveFee=null;
       if(gp && gp.some(v=>v!=null)){
         let gn=0, gd=0;
@@ -484,7 +490,7 @@ function drawPrice(sel){
     monthsWithCalc.forEach(mo=>{
       for(let h=0;h<24;h++){
         if(mo.price!=null && mo.price[h]!=null && mo.hourE[h]>0){ retailN += mo.hourE[h]*mo.price[h]; retailD += mo.hourE[h]; }
-        const gp = GRID_PRICE[mo.m] || null;
+        const gp = GRID_PRICE[mo.m] ? GRID_PRICE[mo.m].price : null;
         if(gp && gp[h]!=null && mo.hourE[h]>0){ gridN += mo.hourE[h]*gp[h]; gridD += mo.hourE[h]; }
       }
     });
@@ -547,7 +553,7 @@ function drawPrice(sel){
   const mo=sel.month;
   const hasP=mo.price&&mo.price.some(p=>p!=null);
   const monthKey = mo.m;
-  const gridPrices = GRID_PRICE[monthKey] || null; // [24] 可能有 null
+  const gridPrices = GRID_PRICE[monthKey] ? GRID_PRICE[monthKey].price : null; // [24] 可能有 null
 
   // --- 计算加权电价 ---
   let retailW = null, gridW = null, diff = null, saveFee = null;
@@ -622,6 +628,7 @@ function drawPrice(sel){
     series});
 }
 
+// 峰谷平
 // ---------- 国网电价 vs 用户电价 ----------
 function drawGridPrice(sel){
   const body=document.getElementById("gridPriceBody");
@@ -632,7 +639,8 @@ function drawGridPrice(sel){
     body.innerHTML='<div class="empty">请切换到单月视图后查看（国网电价按月对比）</div>';
     return;
   }
-  const grid = GRID_PRICE[monthKey];       // [24] 国网电价（可能有 null）
+  const gd = GRID_PRICE[monthKey];
+  const grid = gd.price;       // [24]
   const user = sel.month && sel.month.price;  // [24] 用户电价（可能含 null）
 
   const labels = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23].map(h=>h+":00");
@@ -773,7 +781,7 @@ const MAX_UP_MB=15;
 async function handleFile(f){
   const mb=f.size/1024/1024;
   if(mb>MAX_UP_MB){
-    upShow(`文件 ${f.name} 大小 ${mb.toFixed(1)}MB > ${MAX_UP_MB}MB，请用 Python 预生成 data.js：\n1. 把 Excel 放到本页所在目录\n2. 运行 python generate_data.py\n3. 刷新本页面`,false);return;
+    upShow(`文件 ${f.name} 大小 ${mb.toFixed(1)}MB > ${MAX_UP_MB}MB，请用 Python 预生成 data.js：\n1. 把 Excel 放到 CCC 目录\n2. 运行 python generate_data.py\n3. 刷新本页面`,false);return;
   }
   upShow(`正在解析 ${f.name}（${mb.toFixed(1)}MB）…`,true);
   if(typeof XLSX==="undefined"){upShow("解析库未加载（需联网），请检查网络",false);return;}
